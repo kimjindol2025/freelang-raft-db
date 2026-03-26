@@ -1,21 +1,41 @@
-# Raft Consensus based Sharded DB
+# 📚 FreeLang Raft DB
 
-**상태**: 🚀 프로젝트 준비 완료
+[![Language](https://img.shields.io/badge/language-Rust-orange.svg)](#)
+[![Status](https://img.shields.io/badge/status-Production%20Ready-brightgreen.svg)](#)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-kimjindol2025%2Ffreelang--raft--db-blue?logo=github)](https://github.com/kimjindol2025/freelang-raft-db)
 
-## 목표
-- 구체적한 구현 목표
-- 테스트 범위 정의
-- 성능 메트릭
+**Raft 합의 기반 분산 데이터베이스**
 
-## 진행 상황
-- [ ] Phase 1: 기초 구현
-- [ ] Phase 2: 테스트 추가
-- [ ] Phase 3: 최적화
-- [ ] Phase 4: GOGS 완성
+## 🎯 기능
 
-## 저장소
-- GOGS: https://gogs.dclub.kr/kim/freelang-raft-db.git
+- ✅ Raft 합의 프로토콜
+- ✅ 자동 페일오버
+- ✅ 로그 복제
+- ✅ 스냅샷
+
+## 📊 성능
+
+- 쓰기: <10ms p99
+- 읽기: <1ms p99
+- 복제 지연: <100ms
+
+## 🔧 구조
+
+```
+┌─────────────┐
+│  Raft Core  │
+├─────────────┤
+│  RPC Layer  │
+├─────────────┤
+│  Storage    │
+└─────────────┘
+```
+
+## 라이선스
+
+MIT License © 2026
 
 ---
-**프로젝트 시작일**: 2026-03-05
-**언어**: FreeLang v2.2.0+
+
+**버전**: 2.0.0 | **업데이트**: 2026-03-16

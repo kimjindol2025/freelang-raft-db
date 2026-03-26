@@ -1,0 +1,239 @@
+// Raft Consensus Algorithm - Node Implementation
+// Part 1: Core Raft Node
+// Purpose: Implement Raft consensus protocol for distributed consensus
+
+// ============ Type Definitions ============
+
+// LogEntry represents a single entry in the Raft log
+struct LogEntry {
+    term: i32,
+    command: string,
+    index: i32
+}
+
+// NodeState represents the state of a Raft node
+// States: Follower, Candidate, Leader
+enum NodeState {
+    Follower,
+    Candidate,
+    Leader
+}
+
+// RaftNode represents a single node in the Raft cluster
+struct RaftNode {
+    nodeId: i32,
+    currentTerm: i32,
+    votedFor: i32,
+    logs: array,
+    commitIndex: i32,
+    lastApplied: i32,
+    state: NodeState,
+    electionTimeout: i32,
+    heartbeatInterval: i32,
+    lastHeartbeat: i32,
+    nextIndex: array,
+    matchIndex: array
+}
+
+// ============ Node Initialization ============
+
+fn create_raft_node(nodeId: i32) -> RaftNode {
+    let node = RaftNode {
+        nodeId: nodeId,
+        currentTerm: 0,
+        votedFor: -1,
+        logs: [],
+        commitIndex: 0,
+        lastApplied: 0,
+        state: NodeState.Follower,
+        electionTimeout: 150 + (nodeId * 10),
+        heartbeatInterval: 50,
+        lastHeartbeat: 0,
+        nextIndex: [],
+        matchIndex: []
+    };
+    return node;
+}
+
+// ============ Term Management ============
+
+fn update_current_term(node: RaftNode, newTerm: i32) -> RaftNode {
+    if newTerm > node.currentTerm {
+        node.currentTerm = newTerm;
+        node.votedFor = -1;
+        node.state = NodeState.Follower;
+    }
+    return node;
+}
+
+fn get_current_term(node: RaftNode) -> i32 {
+    return node.currentTerm;
+}
+
+// ============ Log Management ============
+
+fn append_log_entry(node: RaftNode, command: string) -> RaftNode {
+    let entry = LogEntry {
+        term: node.currentTerm,
+        command: command,
+        index: length(node.logs) + 1
+    };
+    push(node.logs, entry);
+    return node;
+}
+
+fn get_log_length(node: RaftNode) -> i32 {
+    return length(node.logs);
+}
+
+fn get_last_log_term(node: RaftNode) -> i32 {
+    if length(node.logs) == 0 {
+        return 0;
+    }
+    return node.logs[length(node.logs) - 1].term;
+}
+
+fn get_last_log_index(node: RaftNode) -> i32 {
+    if length(node.logs) == 0 {
+        return 0;
+    }
+    return node.logs[length(node.logs) - 1].index;
+}
+
+// ============ State Transitions ============
+
+fn become_follower(node: RaftNode) -> RaftNode {
+    node.state = NodeState.Follower;
+    return node;
+}
+
+fn become_candidate(node: RaftNode) -> RaftNode {
+    node.state = NodeState.Candidate;
+    node.currentTerm = node.currentTerm + 1;
+    node.votedFor = node.nodeId;
+    return node;
+}
+
+fn become_leader(node: RaftNode, clusterSize: i32) -> RaftNode {
+    node.state = NodeState.Leader;
+    node.nextIndex = [];
+    node.matchIndex = [];
+
+    let i = 0;
+    while i < clusterSize {
+        push(node.nextIndex, get_last_log_index(node) + 1);
+        push(node.matchIndex, 0);
+        i = i + 1;
+    }
+
+    return node;
+}
+
+// ============ Vote Counting ============
+
+fn count_votes(votes: array, quorumSize: i32) -> i32 {
+    let count = 0;
+    let i = 0;
+    while i < length(votes) {
+        if votes[i] == 1 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn has_quorum(votes: array, clusterSize: i32) -> bool {
+    let quorum = (clusterSize / 2) + 1;
+    let count = count_votes(votes, quorum);
+    return count >= quorum;
+}
+
+// ============ Commit Index Management ============
+
+fn update_commit_index(node: RaftNode, clusterSize: i32) -> RaftNode {
+    let newCommitIndex = node.commitIndex;
+    let n = node.commitIndex + 1;
+
+    while n <= get_last_log_index(node) {
+        let replicas = 1; // Count leader itself
+        let i = 0;
+        while i < length(node.matchIndex) {
+            if i != node.nodeId && node.matchIndex[i] >= n {
+                replicas = replicas + 1;
+            }
+            i = i + 1;
+        }
+
+        let quorum = (clusterSize / 2) + 1;
+        if replicas >= quorum && node.logs[n - 1].term == node.currentTerm {
+            newCommitIndex = n;
+        }
+        n = n + 1;
+    }
+
+    node.commitIndex = newCommitIndex;
+    return node;
+}
+
+// ============ Election Timeout ============
+
+fn should_start_election(node: RaftNode, currentTime: i32) -> bool {
+    let timeSinceLastHeartbeat = currentTime - node.lastHeartbeat;
+    return timeSinceLastHeartbeat >= node.electionTimeout && node.state == NodeState.Follower;
+}
+
+fn reset_election_timer(node: RaftNode, currentTime: i32) -> RaftNode {
+    node.lastHeartbeat = currentTime;
+    return node;
+}
+
+// ============ Validation ============
+
+fn can_vote_for(node: RaftNode, candidateTerm: i32, candidateLastLogIndex: i32, candidateLastLogTerm: i32) -> bool {
+    // Rule 1: Only vote if term is current
+    if candidateTerm < node.currentTerm {
+        return false;
+    }
+
+    // Rule 2: Only vote once per term
+    if candidateTerm == node.currentTerm && node.votedFor != -1 && node.votedFor != candidateTerm {
+        return false;
+    }
+
+    // Rule 3: Candidate must have at least as up-to-date log
+    let lastLogIndex = get_last_log_index(node);
+    let lastLogTerm = get_last_log_term(node);
+
+    if candidateLastLogTerm < lastLogTerm {
+        return false;
+    }
+
+    if candidateLastLogTerm == lastLogTerm && candidateLastLogIndex < lastLogIndex {
+        return false;
+    }
+
+    return true;
+}
+
+// ============ Module Exports ============
+
+fn mod_raft_node_create(nodeId: i32) -> RaftNode {
+    return create_raft_node(nodeId);
+}
+
+fn mod_raft_node_get_term(node: RaftNode) -> i32 {
+    return get_current_term(node);
+}
+
+fn mod_raft_node_append_log(node: RaftNode, command: string) -> RaftNode {
+    return append_log_entry(node, command);
+}
+
+fn mod_raft_node_become_leader(node: RaftNode, clusterSize: i32) -> RaftNode {
+    return become_leader(node, clusterSize);
+}
+
+fn mod_raft_node_update_commit(node: RaftNode, clusterSize: i32) -> RaftNode {
+    return update_commit_index(node, clusterSize);
+}

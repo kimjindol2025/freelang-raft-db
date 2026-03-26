@@ -1,0 +1,334 @@
+// Distributed Database Implementation using Raft
+// Part 3: State Machine and Database Operations
+// Purpose: Implement a distributed key-value database using Raft consensus
+
+// ============ Type Definitions ============
+
+// Command types for the state machine
+enum CommandType {
+    Get,
+    Set,
+    Delete,
+    Exists
+}
+
+// DBCommand represents a command to apply to the state machine
+struct DBCommand {
+    commandType: CommandType,
+    key: string,
+    value: string,
+    timestamp: i32
+}
+
+// DBResponse represents the response from a database operation
+struct DBResponse {
+    success: bool,
+    value: string,
+    error: string,
+    term: i32
+}
+
+// StateMachine represents the key-value store state machine
+struct StateMachine {
+    data: array,
+    lastAppliedIndex: i32,
+    lastAppliedTerm: i32
+}
+
+// DistributedDB combines Raft consensus with state machine
+struct DistributedDB {
+    consensus: RaftConsensus,
+    stateMachine: StateMachine,
+    uncommittedCommands: array,
+    responses: array
+}
+
+// ============ State Machine Initialization ============
+
+fn create_state_machine() -> StateMachine {
+    let sm = StateMachine {
+        data: [],
+        lastAppliedIndex: 0,
+        lastAppliedTerm: 0
+    };
+    return sm;
+}
+
+// ============ Database Operations ============
+
+fn db_set(db: DistributedDB, key: string, value: string, timestamp: i32) -> DistributedDB {
+    // Only leader can accept writes
+    if db.consensus.node.state != NodeState.Leader {
+        let response = DBResponse {
+            success: false,
+            value: "",
+            error: "Not leader",
+            term: db.consensus.node.currentTerm
+        };
+        push(db.responses, response);
+        return db;
+    }
+
+    // Create command
+    let command = DBCommand {
+        commandType: CommandType.Set,
+        key: key,
+        value: value,
+        timestamp: timestamp
+    };
+
+    // Append to log
+    let commandStr = "SET:" + key + ":" + value;
+    db.consensus.node = append_log_entry(db.consensus.node, commandStr);
+
+    // Store uncommitted command for tracking
+    push(db.uncommittedCommands, command);
+
+    let response = DBResponse {
+        success: true,
+        value: "",
+        error: "",
+        term: db.consensus.node.currentTerm
+    };
+    push(db.responses, response);
+    return db;
+}
+
+fn db_get(db: DistributedDB, key: string) -> DistributedDB {
+    // Get can be served by any node with current term (read from state machine)
+    let value = "";
+    let found = false;
+
+    let i = 0;
+    while i < length(db.stateMachine.data) {
+        let entry = db.stateMachine.data[i];
+        if entry.key == key {
+            value = entry.value;
+            found = true;
+        }
+        i = i + 1;
+    }
+
+    let response = DBResponse {
+        success: found,
+        value: value,
+        error: if found then "" else "Key not found",
+        term: db.consensus.node.currentTerm
+    };
+    push(db.responses, response);
+    return db;
+}
+
+fn db_delete(db: DistributedDB, key: string, timestamp: i32) -> DistributedDB {
+    // Only leader can accept deletes
+    if db.consensus.node.state != NodeState.Leader {
+        let response = DBResponse {
+            success: false,
+            value: "",
+            error: "Not leader",
+            term: db.consensus.node.currentTerm
+        };
+        push(db.responses, response);
+        return db;
+    }
+
+    // Create command
+    let command = DBCommand {
+        commandType: CommandType.Delete,
+        key: key,
+        value: "",
+        timestamp: timestamp
+    };
+
+    // Append to log
+    let commandStr = "DEL:" + key;
+    db.consensus.node = append_log_entry(db.consensus.node, commandStr);
+
+    // Store uncommitted command
+    push(db.uncommittedCommands, command);
+
+    let response = DBResponse {
+        success: true,
+        value: "",
+        error: "",
+        term: db.consensus.node.currentTerm
+    };
+    push(db.responses, response);
+    return db;
+}
+
+// ============ State Machine Application ============
+
+fn apply_committed_entries(db: DistributedDB) -> DistributedDB {
+    let lastIndex = db.stateMachine.lastAppliedIndex;
+
+    // Apply all committed entries
+    while lastIndex < db.consensus.node.commitIndex {
+        lastIndex = lastIndex + 1;
+
+        if lastIndex > 0 && lastIndex <= get_log_length(db.consensus.node) {
+            let entry = db.consensus.node.logs[lastIndex - 1];
+
+            // Parse and apply command
+            if starts_with(entry.command, "SET:") {
+                let parts = split_string(entry.command, ":");
+                if length(parts) >= 3 {
+                    let key = parts[1];
+                    let value = parts[2];
+
+                    // Add or update in state machine
+                    let found = false;
+                    let i = 0;
+                    while i < length(db.stateMachine.data) {
+                        if db.stateMachine.data[i].key == key {
+                            db.stateMachine.data[i].value = value;
+                            found = true;
+                        }
+                        i = i + 1;
+                    }
+
+                    if !found {
+                        let newEntry = DBCommand {
+                            commandType: CommandType.Set,
+                            key: key,
+                            value: value,
+                            timestamp: 0
+                        };
+                        push(db.stateMachine.data, newEntry);
+                    }
+                }
+            } else if starts_with(entry.command, "DEL:") {
+                let parts = split_string(entry.command, ":");
+                if length(parts) >= 2 {
+                    let key = parts[1];
+
+                    // Remove from state machine
+                    let i = 0;
+                    while i < length(db.stateMachine.data) {
+                        if db.stateMachine.data[i].key == key {
+                            // Remove by shifting
+                            let j = i;
+                            while j < length(db.stateMachine.data) - 1 {
+                                db.stateMachine.data[j] = db.stateMachine.data[j + 1];
+                                j = j + 1;
+                            }
+                            // Pop last element
+                            if length(db.stateMachine.data) > 0 {
+                                db.stateMachine.data = take(db.stateMachine.data, length(db.stateMachine.data) - 1);
+                            }
+                        }
+                        i = i + 1;
+                    }
+                }
+            }
+
+            db.stateMachine.lastAppliedIndex = lastIndex;
+            db.stateMachine.lastAppliedTerm = entry.term;
+        }
+    }
+
+    return db;
+}
+
+// ============ Distributed DB Initialization ============
+
+fn create_distributed_db(nodeId: i32, clusterSize: i32) -> DistributedDB {
+    let db = DistributedDB {
+        consensus: create_consensus(nodeId, clusterSize),
+        stateMachine: create_state_machine(),
+        uncommittedCommands: [],
+        responses: []
+    };
+    return db;
+}
+
+// ============ Utility Functions ============
+
+fn starts_with(str: string, prefix: string) -> bool {
+    // Simple string prefix check
+    if length(str) < length(prefix) {
+        return false;
+    }
+    let i = 0;
+    while i < length(prefix) {
+        if str[i] != prefix[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn split_string(str: string, delimiter: string) -> array {
+    // Simple string split
+    let parts = [];
+    let current = "";
+    let i = 0;
+    while i < length(str) {
+        if str[i] == delimiter[0] {
+            push(parts, current);
+            current = "";
+        } else {
+            current = current + str[i];
+        }
+        i = i + 1;
+    }
+    if length(current) > 0 {
+        push(parts, current);
+    }
+    return parts;
+}
+
+fn take(arr: array, n: i32) -> array {
+    let result = [];
+    let i = 0;
+    while i < n && i < length(arr) {
+        push(result, arr[i]);
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============ Health Check ============
+
+fn is_leader(db: DistributedDB) -> bool {
+    return db.consensus.node.state == NodeState.Leader;
+}
+
+fn get_current_term(db: DistributedDB) -> i32 {
+    return db.consensus.node.currentTerm;
+}
+
+fn get_log_length(db: DistributedDB) -> i32 {
+    return get_log_length(db.consensus.node);
+}
+
+fn get_commit_index(db: DistributedDB) -> i32 {
+    return db.consensus.node.commitIndex;
+}
+
+// ============ Module Exports ============
+
+fn mod_db_create(nodeId: i32, clusterSize: i32) -> DistributedDB {
+    return create_distributed_db(nodeId, clusterSize);
+}
+
+fn mod_db_set(db: DistributedDB, key: string, value: string, timestamp: i32) -> DistributedDB {
+    return db_set(db, key, value, timestamp);
+}
+
+fn mod_db_get(db: DistributedDB, key: string) -> DistributedDB {
+    return db_get(db, key);
+}
+
+fn mod_db_delete(db: DistributedDB, key: string, timestamp: i32) -> DistributedDB {
+    return db_delete(db, key, timestamp);
+}
+
+fn mod_db_apply_committed(db: DistributedDB) -> DistributedDB {
+    return apply_committed_entries(db);
+}
+
+fn mod_db_is_leader(db: DistributedDB) -> bool {
+    return is_leader(db);
+}
